@@ -120,6 +120,7 @@ class EmopyTalkingDetectionDataset(object):
         self.max_sequence_length = 30
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
+        self.max_batch_images = 100
     def load_dataset(self):
         train_seq = pd.read_pickle(os.path.join(self.dataset_dir,"train_all.pkl"))
         test_seq = pd.read_pickle(os.path.join(self.dataset_dir,"test_all.pkl"))
@@ -159,7 +160,7 @@ class EmopyTalkingDetectionDataset(object):
             face_image = face_image.astype('float32')/255
             dlibpoints = dlibpoints.astype(float)/50;
             dists = dists.astype(float)/50;
-            angles = angles.astype(float)/50;
+            angles = angles.astype(float)/(2*np.pi);
 
             faces[i] = face_image
             dpts[i] = dlibpoints
@@ -211,41 +212,41 @@ class EmopyTalkingDetectionDataset(object):
         random.shuffle(output)
         return output
     def train_generator(self):
-        max_batch_images = 200
+        
         while True:
             indexes = self.generate_indexes(len(self.train))
             for i in range(len(indexes)):
                 index = indexes[i]
                 img_files = os.listdir(os.path.join(self.dataset_dir,self.train[index]))
                 img_files.sort()
-                for i in range(0,len(img_files)-max_batch_images,max_batch_images):
-                    current_images = img_files[i:i+max_batch_images]
+                for i in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
+                    current_images = img_files[i:i+self.max_batch_images]
                     faces,dpts,dpts_dists,dpts_angles,y = self.load_sequence_dataset(self.train[index],current_images)
                     # y = np.eye(2)[y]
                     yield [faces,dpts,dpts_dists,dpts_angles],y
     def test_generator(self):
-        max_batch_images = 200
+        
         while True:
             indexes = self.generate_indexes(len(self.test))
             for i in range(len(indexes)):
                 index = indexes[i]
                 img_files = os.listdir(os.path.join(self.dataset_dir,self.test[index]))
                 img_files.sort()
-                for i in range(0,len(img_files)-max_batch_images,max_batch_images):
-                    current_images = img_files[i:i+max_batch_images]
+                for i in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
+                    current_images = img_files[i:i+self.max_batch_images]
                     faces,dpts,dpts_dists,dpts_angles,y = self.load_sequence_dataset(self.test[index],current_images)
                     # y = np.eye(2)[y]
                     yield [faces,dpts,dpts_dists,dpts_angles],y
     def validation_generator(self):
-        max_batch_images = 200
+        
         while True:
             indexes = self.generate_indexes(len(self.validation))
             for i in range(len(indexes)):
                 index = indexes[i]
                 img_files = os.listdir(os.path.join(self.dataset_dir,self.validation[index]))
                 img_files.sort()
-                for i in range(0,len(img_files)-max_batch_images,max_batch_images):
-                    current_images = img_files[i:i+max_batch_images]
+                for i in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
+                    current_images = img_files[i:i+self.max_batch_images]
                     faces,dpts,dpts_dists,dpts_angles,y = self.load_sequence_dataset(self.validation[index],current_images)
                     # y = np.eye(2)[y]
                     yield [faces,dpts,dpts_dists,dpts_angles],y
