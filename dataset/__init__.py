@@ -5,6 +5,7 @@ import dlib
 import random
 import cv2
 import json
+from keras.models import model_from_json
 def get_dlib_points(image,predictor):
     """
     Get dlib facial key points of face
@@ -111,7 +112,7 @@ def get_angles(dlib_points,centroid):
 
 
 class EmopyTalkingDetectionDataset(object):
-    def __init__(self,dataset_dir,bounding_boxes_path, *args):
+    def __init__(self,dataset_dir,bounding_boxes_path,emopy_model_json,emopy_model_weights, *args):
         super(EmopyTalkingDetectionDataset, self).__init__(*args)
         self.dataset_dir  = dataset_dir
         self.image_shape = (48,48,1)
@@ -121,11 +122,19 @@ class EmopyTalkingDetectionDataset(object):
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
         self.max_batch_images = 100
+        self.emopy_model = self.load_emopy_model(emopy_model_json,emopy_model_weights)
+    def load_emopy_model(self,json_file,weights):
+        with open(json_file) as j_file:
+            model = model_from_json(j_file.read())
+            model.load_weights(weights)
+            model._make_predict_function() 
+            return model
     def load_dataset(self):
         train_seq = pd.read_pickle(os.path.join(self.dataset_dir,"train_all.pkl"))
         test_seq = pd.read_pickle(os.path.join(self.dataset_dir,"test_all.pkl"))
         val_seq = pd.read_pickle(os.path.join(self.dataset_dir,"validation_all.pkl"))
         self.train = train_seq["sequence"].as_matrix()
+        random.shuffle(self.train)
         self.test = test_seq["sequence"].as_matrix()
         self.validation = val_seq["sequence"].as_matrix()
         self.dataset_loaded = True
@@ -137,7 +146,10 @@ class EmopyTalkingDetectionDataset(object):
         output = array[:(len(array)//self.max_sequence_length)*self.max_sequence_length]
         output.append(array[len(array)-self.max_sequence_length:])
         return output
-
+    def draw_points(self,image,points):
+        for point in points:
+            cv2.circle(image,(point.x,point.y),1,(255,0,0))
+        return image
     def load_sequence_dataset_helper(self,sequence,img_files,bboxes):
         faces = np.zeros((self.max_sequence_length,48,48,1))
         dpts = np.zeros((self.max_sequence_length,1,68,2))
@@ -152,6 +164,10 @@ class EmopyTalkingDetectionDataset(object):
                 max(0,int(face[1])):min(img.shape[0],int(face[3])),
                 max(0,int(face[0])):min(img.shape[1],int(face[2]))
             ]
+            # cv2.imshow(self.__get_action(sequence),face_image)
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
+
             face_image = cv2.resize(face_image,(48,48))
             face_image = face_image.reshape(-1, 48, 48, 1)
             dlibpoints,centroids = to_dlib_points(face_image,self.predictor)
@@ -174,6 +190,9 @@ class EmopyTalkingDetectionDataset(object):
             return 1
         else:
             return 0
+    def __get_action(self,sequence_name):
+        action = sequence_name.split("-")
+        return action[2].lower()
     def __get_bounding_boxes(self,sequence_name):
         
         with open(os.path.join(self.bounding_boxes_path,sequence_name+".json")) as bb_file:
@@ -211,42 +230,65 @@ class EmopyTalkingDetectionDataset(object):
         output = range(length)
         random.shuffle(output)
         return output
-    def train_generator(self):
+    def train_generator(self,model):
         
         while True:
             indexes = self.generate_indexes(len(self.train))
             for i in range(len(indexes)):
+                model.reset_states()
                 index = indexes[i]
                 img_files = os.listdir(os.path.join(self.dataset_dir,self.train[index]))
                 img_files.sort()
-                for i in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
-                    current_images = img_files[i:i+self.max_batch_images]
+                for j in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
+                    current_images = img_files[j:j+self.max_batch_images]
                     faces,dpts,dpts_dists,dpts_angles,y = self.load_sequence_dataset(self.train[index],current_images)
-                    # y = np.eye(2)[y]
-                    yield [faces,dpts,dpts_dists,dpts_angles],y
-    def test_generator(self):
+                    sequence_length = faces.shape[1]
+                    for batch in range(faces.shape[0]):
+   
+                        
+                        model_prediction = self.emopy_model.predict([faces[batch].reshape(-1,48,48,1),
+                            dpts[batch].reshape(-1,1,68,2),dpts_dists[batch].reshape(-1,1,68,1),dpts_angles[batch].reshape(-1,1,68,1)])
+                        model_prediction = model_prediction.reshape(1,sequence_length,7)
+                        yield model_prediction,y[batch].reshape(-1,2)
+    def test_generator(self,model):
         
         while True:
             indexes = self.generate_indexes(len(self.test))
             for i in range(len(indexes)):
+                model.reset_states() 
                 index = indexes[i]
                 img_files = os.listdir(os.path.join(self.dataset_dir,self.test[index]))
                 img_files.sort()
-                for i in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
-                    current_images = img_files[i:i+self.max_batch_images]
+                for j in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
+                    current_images = img_files[j:j+self.max_batch_images]
                     faces,dpts,dpts_dists,dpts_angles,y = self.load_sequence_dataset(self.test[index],current_images)
-                    # y = np.eye(2)[y]
-                    yield [faces,dpts,dpts_dists,dpts_angles],y
-    def validation_generator(self):
+                    sequence_length = faces.shape[1]
+                    for batch in range(faces.shape[0]):
+                        # y = np.eye(2)[y]
+                        # batch_size = faces.shape[0]
+                        
+                        model_prediction = self.emopy_model.predict([faces[batch].reshape(-1,48,48,1),
+                            dpts[batch].reshape(-1,1,68,2),dpts_dists[batch].reshape(-1,1,68,1),dpts_angles[batch].reshape(-1,1,68,1)])
+                        model_prediction = model_prediction.reshape(1,sequence_length,7)
+                        yield model_prediction,y[batch].reshape(-1,2)
+    def validation_generator(self,model):
         
         while True:
             indexes = self.generate_indexes(len(self.validation))
             for i in range(len(indexes)):
+                model.reset_states() 
                 index = indexes[i]
                 img_files = os.listdir(os.path.join(self.dataset_dir,self.validation[index]))
                 img_files.sort()
-                for i in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
-                    current_images = img_files[i:i+self.max_batch_images]
+                for j in range(0,len(img_files)-self.max_batch_images,self.max_batch_images):
+                    current_images = img_files[j:j+self.max_batch_images]
                     faces,dpts,dpts_dists,dpts_angles,y = self.load_sequence_dataset(self.validation[index],current_images)
-                    # y = np.eye(2)[y]
-                    yield [faces,dpts,dpts_dists,dpts_angles],y
+                    sequence_length = faces.shape[1]
+                    for batch in range(faces.shape[0]):
+                        # y = np.eye(2)[y]
+                        # batch_size = faces.shape[0]
+                        
+                        model_prediction = self.emopy_model.predict([faces[batch].reshape(-1,48,48,1),
+                            dpts[batch].reshape(-1,1,68,2),dpts_dists[batch].reshape(-1,1,68,1),dpts_angles[batch].reshape(-1,1,68,1)])
+                        model_prediction = model_prediction.reshape(1,sequence_length,7)
+                        yield model_prediction,y[batch].reshape(-1,2)
